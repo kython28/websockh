@@ -1,2 +1,2 @@
 # websockh
-A simple websocket library for C
+A simple websocket client library for C
