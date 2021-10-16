@@ -64,7 +64,7 @@ int main(){
 		}
 	}
 	websockh_close_connection(ws);
-	return  0;
+	return 0;
 }
 ```
 ```
