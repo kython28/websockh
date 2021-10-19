@@ -11,7 +11,8 @@ typedef struct _websockh_client {
 	SSL *ssl;
 } *websockh;
 
-websockh websockh_create_connection(const char *url, uint16_t port, const char *path, uint8_t ssl);
+SSL_CTX *websockh_init_ssl_ctx();
+websockh websockh_create_connection(const char *url, uint16_t port, const char *path, SSL_CTX *ssl_ctx);
 
 uint8_t websockh_send_text(websockh client, char *buffer, uint64_t len);
 uint8_t websockh_send(websockh client, void *buffer, uint64_t len, uint8_t opcode);

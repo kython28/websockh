@@ -6,9 +6,9 @@ If you fancy using my code, you need copy the files from 'src' folder to your pr
 
 To connect to websocket server:
 ```C
-// websockh  websockh_create_connection(const  char  *url,  uint16_t port,  const  char  *path,  uint8_t ssl);
-// if you'll connect with "ws", you must set ssl param with 0, else, 1
-websockh ws =  websockh_create_connection("stream.binance.com",  9443,  "/ws/btcusdt@trade",  1);
+// websockh websockh_create_connection(const char *url, uint16_t port, const char *path, SSL_CTX *ssl_ctx);
+SSL_CTX *ssl_ctx = websockh_init_ssl_ctx(); // if you'll connect with "wss", you must set ssl_ctx param with some SSL_CTX*, else, NULL
+websockh ws =  websockh_create_connection("stream.binance.com",  9443,  "/ws/btcusdt@trade",  ssl_ctx);
 if (ws == NULL) ...
 ```
 Well, now you can use all the functions. So, we'll see some examples... If you want to send something:
@@ -39,6 +39,8 @@ And finally, if want to close connection . . .
 ```C
 // void  websockh_close_connection(websockh client);
 websockh_close_connection(ws);
+// And if you are using ssl_ctx
+SSL_CTX_free(ssl_ctx);
 ```
 # Example
 ```C
@@ -47,7 +49,8 @@ websockh_close_connection(ws);
 #include <stdio.h>
 
 int main(){
-	websockh ws = websockh_create_connection("stream.binance.com", 9443, "/ws/btcusdt@trade", 1);
+	SSL_CTX *ssl_ctx = websockh_init_ssl_ctx();
+	websockh ws = websockh_create_connection("stream.binance.com", 9443, "/ws/btcusdt@trade", ssl_ctx);
 	if (ws == NULL) return  1;
 	while (1){
 		uint64_t len;
@@ -61,9 +64,10 @@ int main(){
 				printf("%ld %d\n", len, opcode);
 			}
 			free(msg);
-		}
+		}else break; // It return NULL if there is some error
 	}
 	websockh_close_connection(ws);
+	SSL_CTX_free(ssl_ctx);
 	return 0;
 }
 ```

@@ -62,8 +62,6 @@ int send_handshake(websockh client, const char *host, const char *path, uint8_t 
 	addHandshakeField(fields, "Connection", 10, "Upgrade", 7);
 	addHandshakeField(fields, "Sec-WebSocket-Key", 17, key, strlen(key));
 	addHandshakeField(fields, "Sec-WebSocket-Version", 21, ver, strlen(ver));
-
-	
 	
 	char response[65536] = {0};
 	char *handshake;
@@ -72,27 +70,36 @@ int send_handshake(websockh client, const char *host, const char *path, uint8_t 
 	l = calcHandshakeLenght(hdr_len, fields);
 	handshake = getHandshakeFrame(header, hdr_len, fields, l);
 	if (ssl){
-		SSL_write(client->ssl, handshake, l);
-		SSL_read(client->ssl, response, l);
+		if (SSL_write(client->ssl, handshake, l) <= 0) ret = -1;
+		else if (SSL_read(client->ssl, response, l) <= 0) ret = -1;
 	}else{
-		send(client->fd, handshake, l, 0);
-		recv(client->fd, response, 65536, 0);
+		if (send(client->fd, handshake, l, 0) <= 0) ret = -1;
+		else if (recv(client->fd, response, 65536, 0) <= 0) ret = -1;
 	}
 
-	res_hdr = parseHandshake(response, strlen(response));
-	if (res_hdr->status_code != 101){
-		register char *version = getHandshakeField(res_hdr->fields, "Sec-WebSocket-Version", 21, &vl);
-		if (version) ret = atoi(version);
+	if (ret >= 0){
+		res_hdr = parseHandshake(response, strlen(response));
+		if (res_hdr->status_code != 101){
+			register char *version = getHandshakeField(res_hdr->fields, "Sec-WebSocket-Version", 21, &vl);
+			if (version) ret = atoi(version);
+		}
+		freeHandshakeField(res_hdr->fields);
+		free(res_hdr);
 	}
-	freeHandshakeField(res_hdr->fields);
 	freeHandshakeField(fields);
 	free(handshake);
-	free(res_hdr);
 	free(header);
 	return ret;
 }
 
-websockh websockh_create_connection(const char *url, uint16_t port, const char *path, uint8_t ssl){
+SSL_CTX *websockh_init_ssl_ctx(){
+	OpenSSL_add_all_algorithms();
+	SSL_load_error_strings();
+	SSL_CTX *ctx = SSL_CTX_new(TLSv1_2_client_method());
+	return ctx;
+}
+
+websockh websockh_create_connection(const char *url, uint16_t port, const char *path, SSL_CTX *ssl_ctx){
 	websockh client;
 	
 	char ip[16];
@@ -113,6 +120,9 @@ websockh websockh_create_connection(const char *url, uint16_t port, const char *
 
 	int fd, version = 25;
 	client = calloc(1, sizeof(struct _websockh_client));
+	client->ctx = ssl_ctx;
+	uint8_t ssl = 0;
+	if (ssl_ctx) ssl = 1;
 	while (1){
 		fd = socket(AF_INET, SOCK_STREAM, 0);
 		if (fd < 0) {
@@ -123,13 +133,10 @@ websockh websockh_create_connection(const char *url, uint16_t port, const char *
 
 		client->fd = fd;
 		if (ssl){
-			OpenSSL_add_all_algorithms();
-			client->ctx = SSL_CTX_new(TLSv1_2_client_method());
-			client->ssl = SSL_new(client->ctx);
+			client->ssl = SSL_new(ssl_ctx);
 			SSL_set_fd(client->ssl, fd);
 			if (SSL_connect(client->ssl) < 0){
 				close(client->fd);
-				SSL_CTX_free(client->ctx);
 				free(client);
 				client = NULL;
 				break;
@@ -139,10 +146,7 @@ websockh websockh_create_connection(const char *url, uint16_t port, const char *
 		version = send_handshake(client, url, path, port, ssl, version);
 		if (version < 0){
 			close(fd);
-			if (ssl){
-				SSL_free(client->ssl);
-				SSL_CTX_free(client->ctx);
-			}
+			if (ssl) SSL_free(client->ssl);
 			free(client);
 			client = NULL;
 			break;
@@ -150,7 +154,6 @@ websockh websockh_create_connection(const char *url, uint16_t port, const char *
 		close(fd);
 		if (ssl){
 			SSL_free(client->ssl);
-			SSL_CTX_free(client->ctx);
 		}
 	}
 	return client;
@@ -207,8 +210,8 @@ uint8_t send_packet(websockh client, void *buffer, uint64_t len, uint8_t opcode)
 				size = 10;
 			}
 			#endif
-			if (!SSL_write(ssl, hdr, size)) return 1;
-			if (!SSL_write(ssl, buffer + offset, s2)) return 1;
+			if (SSL_write(ssl, hdr, size) <= 0) return 1;
+			if (SSL_write(ssl, buffer + offset, s2) <= 0) return 1;
 		}
 	}else{
 		int fd = client->fd;
@@ -243,8 +246,8 @@ uint8_t send_packet(websockh client, void *buffer, uint64_t len, uint8_t opcode)
 			size = 10;
 		}
 		#endif
-		if (send(fd, hdr, size, 0) < 0) return 1;
-		if (send(fd, buffer, len, 0) < 0) return 1;
+		if (send(fd, hdr, size, 0) <= 0) return 1;
+		if (send(fd, buffer, len, 0) <= 0) return 1;
 	}
 	return 0;
 }
@@ -260,9 +263,9 @@ void *recv_pack(websockh client, uint64_t *len, uint8_t *opcode){
 	while (!fin){
 		offset += si;
 		if (ssl){
-			if (!SSL_read(ssl, hdr, 2)) break;
+			if (SSL_read(ssl, hdr, 2) <= 0) goto failed_recv_pack;
 		}else{
-			if (read(fd, hdr, 2) < 0) break;
+			if (read(fd, hdr, 2) <= 0) goto failed_recv_pack;
 		}
 		fin = hdr[0];
 		if (hd){
@@ -276,9 +279,9 @@ void *recv_pack(websockh client, uint64_t *len, uint8_t *opcode){
 		if (l < 126) si = l;
 		else if (l == 126){
 			if (ssl){
-				if (!SSL_read(ssl, hdr, 2)) break;
+				if (SSL_read(ssl, hdr, 2) <= 0) goto failed_recv_pack;
 			}else{
-				if (recv(fd, hdr, 2, 0) < 0) break;
+				if (recv(fd, hdr, 2, 0) <= 0) goto failed_recv_pack;
 			}
 
 			#if __BYTE_ORDER == __LITTLE_ENDIAN
@@ -289,9 +292,9 @@ void *recv_pack(websockh client, uint64_t *len, uint8_t *opcode){
 			#endif
 		}else{
 			if (ssl){
-				if (!SSL_read(ssl, hdr, 8)) break;
+				if (SSL_read(ssl, hdr, 8) <= 0) goto failed_recv_pack;
 			}else{
-				if (recv(fd, hdr, 8, 0) < 0) break;
+				if (recv(fd, hdr, 8, 0) <= 0) goto failed_recv_pack;
 			}
 
 			#if __BYTE_ORDER == __LITTLE_ENDIAN
@@ -305,9 +308,9 @@ void *recv_pack(websockh client, uint64_t *len, uint8_t *opcode){
 
 		if (mask){
 			if (ssl){
-				if (!SSL_read(ssl, hdr, 4)) break;
+				if (SSL_read(ssl, hdr, 4) <= 0) goto failed_recv_pack;
 			}else{
-				if (recv(fd, hdr, 4, 0) < 0) break;
+				if (recv(fd, hdr, 4, 0) <= 0) goto failed_recv_pack;
 			}
 		}
 		if (l > 0){
@@ -317,15 +320,11 @@ void *recv_pack(websockh client, uint64_t *len, uint8_t *opcode){
 					register int le = INT_MAX;
 					if (le+INT_MAX > si) le = si - x;
 
-					if (!SSL_read(ssl, buffer + offset + x, le)) goto fail_ssl_read_buffer;
+					if (SSL_read(ssl, buffer + offset + x, le) <= 0) goto failed_recv_pack;
 				}
-				goto success_ssl_read_buffer;
-				fail_ssl_read_buffer:
-				break;
 			}else{
-				if (recv(fd, buffer + offset, si, 0) < 0) break;
+				if (recv(fd, buffer + offset, si, 0) <= 0) goto failed_recv_pack;
 			}
-			success_ssl_read_buffer:
 			if (mask){
 				for (uint64_t x=0; x<si; x++){
 					((uint8_t*)(buffer + offset))[x] ^= hdr[x%4];
@@ -333,6 +332,12 @@ void *recv_pack(websockh client, uint64_t *len, uint8_t *opcode){
 			}
 		}
 	}
+	goto success_recv_pack;
+	failed_recv_pack:
+	if (buffer) free(buffer);
+	len[0] = 0;
+	buffer = NULL;
+	success_recv_pack:
 	return buffer;
 }
 
@@ -362,8 +367,6 @@ void *websockh_recv(websockh client, uint64_t *len, uint8_t *type_data){
 void websockh_close_connection(websockh client){
 	if (client->ssl){
 		SSL_free(client->ssl);
-		
-		SSL_CTX_free(client->ctx);
 	}else{
 		close(client->fd);
 	}
